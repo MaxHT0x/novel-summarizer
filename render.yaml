@@ -7,4 +7,4 @@ services:
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false
-    nodeVersion: 16
+    nodeVersion: 16.20.0
