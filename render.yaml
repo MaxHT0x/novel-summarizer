@@ -2,9 +2,9 @@ services:
   - type: web
     name: novel-summarizer
     env: node
-    buildCommand: npm ci
+    buildCommand: rm -rf node_modules && npm ci
     startCommand: npm start
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false
-    nodeVersion: 18
+    nodeVersion: 16
