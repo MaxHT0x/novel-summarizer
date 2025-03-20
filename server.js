@@ -121,8 +121,8 @@ SUMMARIZATION GUIDELINES:
 
 2. Focus on:
    - Plot progression and key events
+   - Dialogue and revelations
    - Character development and relationships
-   - Important dialogue and revelations
    - Setting details when significant
    - Foreshadowing elements
 
@@ -132,17 +132,18 @@ SUMMARIZATION GUIDELINES:
    - Character names and perspectives
 
 4. Include:
-   - All crucial plot developments 
+   - All crucial plot developments
    - Character decisions and motivations
-   - Significant conversations (especially those containing subtle revelations)
+   - Significant conversations (ESPECIALLY those containing subtle revelations)
    - Details that may become important in future chapters
 
 5. Formatting:
    - Use paragraph breaks as appropriate
-   - Keep dialogue concise but meaningful
+   - Keep dialogue concise where possible, but meaningful
    - Maintain the original tense and narrative voice
+   - Use the original writing style
 
-Your summary should be approximately 30-40% the length of the original chapter while preserving all essential content.`
+Your summary should be approximately 30-45% the length of the original chapter while preserving all essential content.`
   },
   {
     "role": "user",
