@@ -7,6 +7,10 @@ const fetch = require('node-fetch');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Import auth routes and userTokens
+const auth = require('./auth');
+const userTokens = auth.userTokens;
+
 // Middleware setup with more permissive CORS for Chrome extension
 app.use(cors({
   origin: '*', // Allow all origins - necessary for Chrome extension
@@ -15,12 +19,52 @@ app.use(cors({
 }));
 app.use(bodyParser.json({ limit: '50mb' })); // Support larger JSON payloads for novel content
 
+// Register auth routes
+app.use('/auth', auth.router);
+
+const authenticate = (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Authentication required' 
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    
+    // Check if token exists in our storage
+    if (!userTokens.has(token)) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid or expired token' 
+      });
+    }
+    
+    // Get user data and attach to request
+    const userData = userTokens.get(token);
+    req.user = userData.user;
+    
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Authentication error: ' + error.message 
+    });
+  }
+};
+
 // Health check endpoint
 app.get('/', (req, res) => {
   res.send('Novel Summarizer API is running');
 });
 
+// OPTION 1: Temporarily disable authentication for development
 // Main endpoint to receive chapter content and return summary
+/*
 app.post('/summarize', async (req, res) => {
   try {
     // Extract chapter content and settings from request
@@ -62,7 +106,53 @@ app.post('/summarize', async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'error', message: 'Failed to generate summary: ' + error.message })}\n\n`);
     res.end();
   }
+});*/
+
+//OPTION 2: Keep authentication but enable it after you implement the client-side token storage
+
+app.post('/summarize', authenticate, async (req, res) => {
+  try {
+    // Extract chapter content and settings from request
+    const { chapterContent, chapterTitle, qualitySpeed } = req.body;
+    
+    if (!chapterContent) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No chapter content provided' 
+      });
+    }
+
+    console.log(`Received request to summarize chapter: ${chapterTitle || 'Untitled'}`);
+    console.log(`Content length: ${chapterContent.length} characters`);
+    console.log(`Quality/Speed setting: ${qualitySpeed || 'Not specified, using default'}`);
+    
+    // Set headers for streaming response and CORS
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    
+    // Send initial message
+    res.write(`data: ${JSON.stringify({ type: 'start', message: 'Starting summary generation...' })}\n\n`);
+    
+    // Prepare the prompt for the AI
+    const prompt = `${chapterContent}`;
+
+    // Stream the summary from OpenRouter with model selection based on quality/speed setting
+    await streamSummaryFromOpenRouter(prompt, res, qualitySpeed);
+    
+    // End the response when complete
+    res.write(`data: ${JSON.stringify({ type: 'complete', message: 'Summary complete' })}\n\n`);
+    res.end();
+    
+  } catch (error) {
+    console.error('Error processing summary request:', error);
+    // Send error message in the stream format
+    res.write(`data: ${JSON.stringify({ type: 'error', message: 'Failed to generate summary: ' + error.message })}\n\n`);
+    res.end();
+  }
 });
+
 
 // Function to stream summary from OpenRouter API
 async function streamSummaryFromOpenRouter(prompt, res, qualitySpeed = '2') {
