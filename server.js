@@ -11,6 +11,9 @@ const port = process.env.PORT || 3000;
 const auth = require('./auth');
 const userTokens = auth.userTokens;
 
+// Import rate limiter
+const rateLimiter = require('./rate-limiter');
+
 // Middleware setup with more permissive CORS for Chrome extension
 app.use(cors({
   origin: '*', // Allow all origins - necessary for Chrome extension
@@ -46,6 +49,7 @@ const authenticate = (req, res, next) => {
     // Get user data and attach to request
     const userData = userTokens.get(token);
     req.user = userData.user;
+    req.token = token; // Store token for later use
     
     next();
   } catch (error) {
@@ -62,54 +66,7 @@ app.get('/', (req, res) => {
   res.send('Novel Summarizer API is running');
 });
 
-// OPTION 1: Temporarily disable authentication for development
-// Main endpoint to receive chapter content and return summary
-/*
-app.post('/summarize', async (req, res) => {
-  try {
-    // Extract chapter content and settings from request
-    const { chapterContent, chapterTitle, qualitySpeed } = req.body;
-    
-    if (!chapterContent) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No chapter content provided' 
-      });
-    }
-
-    console.log(`Received request to summarize chapter: ${chapterTitle || 'Untitled'}`);
-    console.log(`Content length: ${chapterContent.length} characters`);
-    console.log(`Quality/Speed setting: ${qualitySpeed || 'Not specified, using default'}`);
-    
-    // Set headers for streaming response and CORS
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    
-    // Send initial message
-    res.write(`data: ${JSON.stringify({ type: 'start', message: 'Starting summary generation...' })}\n\n`);
-    
-    // Prepare the prompt for the AI
-    const prompt = `${chapterContent}`;
-
-    // Stream the summary from OpenRouter with model selection based on quality/speed setting
-    await streamSummaryFromOpenRouter(prompt, res, qualitySpeed);
-    
-    // End the response when complete
-    res.write(`data: ${JSON.stringify({ type: 'complete', message: 'Summary complete' })}\n\n`);
-    res.end();
-    
-  } catch (error) {
-    console.error('Error processing summary request:', error);
-    // Send error message in the stream format
-    res.write(`data: ${JSON.stringify({ type: 'error', message: 'Failed to generate summary: ' + error.message })}\n\n`);
-    res.end();
-  }
-});*/
-
-//OPTION 2: Keep authentication but enable it after you implement the client-side token storage
-
+// Main endpoint to receive chapter content and return summary with rate limiting
 app.post('/summarize', authenticate, async (req, res) => {
   try {
     // Extract chapter content and settings from request
@@ -121,6 +78,24 @@ app.post('/summarize', authenticate, async (req, res) => {
         message: 'No chapter content provided' 
       });
     }
+
+    // Get user ID for rate limiting
+    const userId = req.user.id;
+    
+    // Check rate limit
+    if (!rateLimiter.canMakeRequest(userId, qualitySpeed)) {
+      const timeRemaining = rateLimiter.getTimeRemaining(userId, qualitySpeed);
+      const formattedTime = rateLimiter.formatTimeRemaining(timeRemaining);
+      
+      return res.status(429).json({
+        success: false,
+        message: `Rate limit exceeded. Please try again in ${formattedTime}.`,
+        timeRemaining
+      });
+    }
+    
+    // Record the request
+    rateLimiter.recordRequest(userId);
 
     console.log(`Received request to summarize chapter: ${chapterTitle || 'Untitled'}`);
     console.log(`Content length: ${chapterContent.length} characters`);
@@ -153,6 +128,34 @@ app.post('/summarize', authenticate, async (req, res) => {
   }
 });
 
+// Add an endpoint to check rate limit status
+app.get('/rate-limit-status', authenticate, (req, res) => {
+  const userId = req.user.id;
+  
+  // Check all tiers
+  const status = {
+    quality: {
+      timeRemaining: rateLimiter.getTimeRemaining(userId, '1'),
+      formattedTime: rateLimiter.formatTimeRemaining(rateLimiter.getTimeRemaining(userId, '1')),
+      canMakeRequest: rateLimiter.canMakeRequest(userId, '1')
+    },
+    balanced: {
+      timeRemaining: rateLimiter.getTimeRemaining(userId, '2'),
+      formattedTime: rateLimiter.formatTimeRemaining(rateLimiter.getTimeRemaining(userId, '2')),
+      canMakeRequest: rateLimiter.canMakeRequest(userId, '2')
+    },
+    speed: {
+      timeRemaining: rateLimiter.getTimeRemaining(userId, '3'),
+      formattedTime: rateLimiter.formatTimeRemaining(rateLimiter.getTimeRemaining(userId, '3')),
+      canMakeRequest: rateLimiter.canMakeRequest(userId, '3')
+    }
+  };
+  
+  res.json({
+    success: true,
+    status
+  });
+});
 
 // Function to stream summary from OpenRouter API
 async function streamSummaryFromOpenRouter(prompt, res, qualitySpeed = '2') {
