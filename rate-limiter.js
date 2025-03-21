@@ -9,7 +9,7 @@ class RateLimiter {
     //   this.limits = {
     //     '1': 30 * 60 * 1000,  // Quality: 30 minutes
     //     '2': 60 * 1000,       // Balanced: 1 minute
-    //     '3': 20 * 1000        // Speed: 20 seconds
+    //     '3': 30 * 1000        // Speed: 20 seconds
     //   };
 
       this.limits = {
