@@ -7,4 +7,6 @@ services:
     envVars:
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: MONGO_URI
+        sync: false
     nodeVersion: 16.20.0

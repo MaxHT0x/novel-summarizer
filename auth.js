@@ -1,41 +1,21 @@
-// auth.js - Google Authentication Routes
+// auth.js - Google Authentication Routes with MongoDB
 const express = require('express');
 const router = express.Router();
 const fetch = require('node-fetch');
 const crypto = require('crypto');
 
-// In-memory token storage (replace with a database in production)
-const userTokens = new Map();
+// Import MongoDB models
+const User = require('./models/User');
+const Token = require('./models/Token');
 
 // Token expiration settings
 const TOKEN_EXPIRATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
-
-// Scheduled token cleanup (every hour)
-setInterval(() => {
-  cleanupExpiredTokens();
-}, 60 * 60 * 1000);
-
-// Helper function to clean up expired tokens
-function cleanupExpiredTokens() {
-  const now = Date.now();
-  let expiredCount = 0;
-  
-  for (const [token, data] of userTokens.entries()) {
-    if (now >= data.expiresAt) {
-      userTokens.delete(token);
-      expiredCount++;
-    }
-  }
-  
-  if (expiredCount > 0) {
-    console.log(`Cleaned up ${expiredCount} expired tokens`);
-  }
-}
 
 // Google authentication endpoint
 router.post('/google', async (req, res) => {
   try {
     const { token, email, name, picture } = req.body;
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
     if (!token || !email) {
       return res.status(400).json({ 
@@ -57,7 +37,7 @@ router.post('/google', async (req, res) => {
       
       const tokenInfo = await googleResponse.json();
       
-      // Very basic validation - in production, verify more fields
+      // Basic validation
       if (!tokenInfo.email || tokenInfo.email !== email) {
         return res.status(401).json({ 
           success: false, 
@@ -72,25 +52,49 @@ router.post('/google', async (req, res) => {
       });
     }
 
-    // Create a user object (in production, store in database)
-    const user = {
-      id: email, // Using email as ID for simplicity
-      email,
-      displayName: name,
-      profilePicture: picture,
-      lastLogin: new Date()
-    };
+    // Find or create user in database
+    let user = await User.findOne({ email });
+    
+    if (!user) {
+      // Create new user
+      user = new User({
+        email,
+        displayName: name,
+        profilePicture: picture,
+        ipAddresses: [{ ip: clientIp }]
+      });
+    } else {
+      // Update existing user
+      user.lastLogin = new Date();
+      user.displayName = name;
+      user.profilePicture = picture;
+      
+      // Add IP if not already tracked
+      const ipExists = user.ipAddresses.some(entry => entry.ip === clientIp);
+      if (!ipExists && clientIp) {
+        user.ipAddresses.push({ ip: clientIp });
+      } else if (clientIp) {
+        // Update timestamp for existing IP
+        const ipEntry = user.ipAddresses.find(entry => entry.ip === clientIp);
+        if (ipEntry) {
+          ipEntry.lastUsed = new Date();
+        }
+      }
+    }
+    
+    await user.save();
 
-    // Generate a session token (in production, use a proper JWT library)
+    // Generate a session token
     const sessionToken = crypto.randomBytes(64).toString('hex');
     
     // Calculate expiration time
-    const now = Date.now();
-    const expiresAt = now + TOKEN_EXPIRATION_MS;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + TOKEN_EXPIRATION_MS);
     
-    // Store the token with expiration
-    userTokens.set(sessionToken, {
-      user,
+    // Store the token
+    await Token.create({
+      token: sessionToken,
+      user: user._id,
       created: now,
       expiresAt
     });
@@ -100,7 +104,13 @@ router.post('/google', async (req, res) => {
       success: true,
       message: 'Authentication successful',
       sessionToken,
-      user,
+      user: {
+        id: user._id,
+        email: user.email,
+        displayName: user.displayName,
+        profilePicture: user.profilePicture,
+        tier: user.tier
+      },
       expiresAt
     });
   } catch (error) {
@@ -113,7 +123,7 @@ router.post('/google', async (req, res) => {
 });
 
 // Verify token endpoint
-router.post('/verify-token', (req, res) => {
+router.post('/verify-token', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -124,24 +134,23 @@ router.post('/verify-token', (req, res) => {
       });
     }
     
-    const token = authHeader.split(' ')[1];
+    const tokenStr = authHeader.split(' ')[1];
     
-    // Check if token exists in our storage
-    if (!userTokens.has(token)) {
+    // Check if token exists
+    const tokenData = await Token.findOne({ token: tokenStr }).populate('user');
+    
+    if (!tokenData) {
       return res.status(401).json({ 
         success: false, 
         message: 'Invalid or expired token' 
       });
     }
     
-    // Get user data
-    const userData = userTokens.get(token);
-    
     // Check token expiration
-    const now = Date.now();
-    if (now >= userData.expiresAt) {
+    const now = new Date();
+    if (now >= tokenData.expiresAt) {
       // Remove expired token
-      userTokens.delete(token);
+      await Token.deleteOne({ _id: tokenData._id });
       
       return res.status(401).json({
         success: false,
@@ -150,12 +159,18 @@ router.post('/verify-token', (req, res) => {
       });
     }
     
-    // Token is valid, return user data and updated expiration time
+    // Token is valid, return user data
     return res.status(200).json({
       success: true,
       message: 'Token is valid',
-      user: userData.user,
-      expiresAt: userData.expiresAt
+      user: {
+        id: tokenData.user._id,
+        email: tokenData.user.email,
+        displayName: tokenData.user.displayName,
+        profilePicture: tokenData.user.profilePicture,
+        tier: tokenData.user.tier
+      },
+      expiresAt: tokenData.expiresAt
     });
   } catch (error) {
     console.error('Token verification error:', error);
@@ -167,7 +182,7 @@ router.post('/verify-token', (req, res) => {
 });
 
 // Refresh token endpoint
-router.post('/refresh-token', (req, res) => {
+router.post('/refresh-token', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -178,26 +193,25 @@ router.post('/refresh-token', (req, res) => {
       });
     }
     
-    const token = authHeader.split(' ')[1];
+    const tokenStr = authHeader.split(' ')[1];
     
-    // Check if token exists in our storage
-    if (!userTokens.has(token)) {
+    // Find token
+    const tokenData = await Token.findOne({ token: tokenStr }).populate('user');
+    
+    if (!tokenData) {
       return res.status(401).json({ 
         success: false, 
         message: 'Invalid or expired token' 
       });
     }
     
-    // Get user data
-    const userData = userTokens.get(token);
-    
-    // Check if token is not too old (within 30 days) to be refreshed
-    const now = Date.now();
-    const tokenAge = now - userData.created;
+    // Check if token is not too old to be refreshed
+    const now = new Date();
+    const tokenAge = now - tokenData.created;
     const MAX_REFRESH_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days
     
     if (tokenAge > MAX_REFRESH_AGE) {
-      userTokens.delete(token);
+      await Token.deleteOne({ _id: tokenData._id });
       
       return res.status(401).json({
         success: false,
@@ -210,24 +224,31 @@ router.post('/refresh-token', (req, res) => {
     const newSessionToken = crypto.randomBytes(64).toString('hex');
     
     // Calculate new expiration time
-    const expiresAt = now + TOKEN_EXPIRATION_MS;
+    const expiresAt = new Date(now.getTime() + TOKEN_EXPIRATION_MS);
     
     // Store the new token
-    userTokens.set(newSessionToken, {
-      user: userData.user,
+    await Token.create({
+      token: newSessionToken,
+      user: tokenData.user._id,
       created: now,
       expiresAt
     });
     
     // Remove the old token
-    userTokens.delete(token);
+    await Token.deleteOne({ _id: tokenData._id });
     
     // Return the new session token and user info
     return res.status(200).json({
       success: true,
       message: 'Token refreshed successfully',
       sessionToken: newSessionToken,
-      user: userData.user,
+      user: {
+        id: tokenData.user._id,
+        email: tokenData.user.email,
+        displayName: tokenData.user.displayName,
+        profilePicture: tokenData.user.profilePicture,
+        tier: tokenData.user.tier
+      },
       expiresAt
     });
   } catch (error) {
@@ -239,8 +260,8 @@ router.post('/refresh-token', (req, res) => {
   }
 });
 
-// Logout endpoint (optional)
-router.post('/logout', (req, res) => {
+// Logout endpoint
+router.post('/logout', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -251,10 +272,10 @@ router.post('/logout', (req, res) => {
       });
     }
     
-    const token = authHeader.split(' ')[1];
+    const tokenStr = authHeader.split(' ')[1];
     
-    // Remove token from storage
-    userTokens.delete(token);
+    // Remove token from database
+    await Token.deleteOne({ token: tokenStr });
     
     return res.status(200).json({
       success: true,
@@ -269,8 +290,24 @@ router.post('/logout', (req, res) => {
   }
 });
 
-// Export userTokens so it can be accessed from server.js
+// Helper functions for other parts of the app to verify tokens
+const getUserFromToken = async (tokenStr) => {
+  if (!tokenStr) return null;
+  
+  const tokenData = await Token.findOne({ token: tokenStr }).populate('user');
+  if (!tokenData) return null;
+  
+  // Check expiration
+  const now = new Date();
+  if (now >= tokenData.expiresAt) {
+    await Token.deleteOne({ _id: tokenData._id });
+    return null;
+  }
+  
+  return tokenData.user;
+};
+
 module.exports = {
   router,
-  userTokens
+  getUserFromToken
 };
