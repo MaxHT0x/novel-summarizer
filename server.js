@@ -94,8 +94,8 @@ app.post('/summarize', authenticate, async (req, res) => {
       });
     }
     
-    // Record the request
-    rateLimiter.recordRequest(userId);
+    // Record the request with the specific qualitySpeed setting
+    rateLimiter.recordRequest(userId, qualitySpeed);
 
     console.log(`Received request to summarize chapter: ${chapterTitle || 'Untitled'}`);
     console.log(`Content length: ${chapterContent.length} characters`);

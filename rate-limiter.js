@@ -2,14 +2,20 @@
 
 class RateLimiter {
     constructor() {
-      // Store user requests with timestamps
+      // Store user requests with timestamps, separated by quality/speed setting
       this.userRequests = new Map();
       
       // Rate limit settings (in milliseconds)
+    //   this.limits = {
+    //     '1': 30 * 60 * 1000,  // Quality: 30 minutes
+    //     '2': 60 * 1000,       // Balanced: 1 minute
+    //     '3': 20 * 1000        // Speed: 20 seconds
+    //   };
+
       this.limits = {
-        '1': 30 * 60 * 1000,  // Quality: 30 minutes
-        '2': 60 * 1000,       // Balanced: 1 minute
-        '3': 20 * 1000        // Speed: 20 seconds
+          '1': 15 * 1000,  // FOR TESTING
+          '2': 15 * 1000,  // FOR TESTING
+          '3': 15 * 1000   // FOR TESTING
       };
       
       // Cleanup old entries periodically (every hour)
@@ -24,37 +30,54 @@ class RateLimiter {
       // Get current time
       const now = Date.now();
       
-      // Get user's request history
+      // Get user's request history for this specific quality/speed setting
       if (!this.userRequests.has(userId)) {
-        this.userRequests.set(userId, []);
+        this.userRequests.set(userId, {
+          '1': [],  // Quality
+          '2': [],  // Balanced
+          '3': []   // Speed
+        });
       }
       
-      const requests = this.userRequests.get(userId);
+      const userRequestsMap = this.userRequests.get(userId);
+      const requestsForSetting = userRequestsMap[qualitySpeed] || [];
       
       // Filter out requests older than the limit
-      const recentRequests = requests.filter(timestamp => (now - timestamp) < limitMs);
+      const recentRequests = requestsForSetting.filter(timestamp => (now - timestamp) < limitMs);
       
       // If there are no recent requests, the user can make a request
       return recentRequests.length === 0;
     }
     
-    // Record a new request for a user
-    recordRequest(userId) {
+    // Record a new request for a user with specific quality/speed setting
+    recordRequest(userId, qualitySpeed) {
+      // Default to balanced if not specified
+      qualitySpeed = qualitySpeed || '2';
+      
       // Get current time
       const now = Date.now();
       
       // Get user's request history or initialize it
       if (!this.userRequests.has(userId)) {
-        this.userRequests.set(userId, []);
+        this.userRequests.set(userId, {
+          '1': [],  // Quality
+          '2': [],  // Balanced
+          '3': []   // Speed
+        });
       }
       
-      const requests = this.userRequests.get(userId);
+      const userRequestsMap = this.userRequests.get(userId);
       
-      // Add the new request timestamp
-      requests.push(now);
+      // Ensure the array for this setting exists
+      if (!userRequestsMap[qualitySpeed]) {
+        userRequestsMap[qualitySpeed] = [];
+      }
+      
+      // Add the new request timestamp for this specific setting
+      userRequestsMap[qualitySpeed].push(now);
       
       // Update the user's request history
-      this.userRequests.set(userId, requests);
+      this.userRequests.set(userId, userRequestsMap);
     }
     
     // Get time remaining until next allowed request
@@ -70,14 +93,15 @@ class RateLimiter {
         return 0;
       }
       
-      const requests = this.userRequests.get(userId);
+      const userRequestsMap = this.userRequests.get(userId);
+      const requestsForSetting = userRequestsMap[qualitySpeed] || [];
       
-      if (requests.length === 0) {
+      if (requestsForSetting.length === 0) {
         return 0;
       }
       
       // Find the most recent request
-      const latestRequest = Math.max(...requests);
+      const latestRequest = Math.max(...requestsForSetting);
       
       // Calculate time elapsed since the latest request
       const elapsed = now - latestRequest;
@@ -119,16 +143,30 @@ class RateLimiter {
       const maxLimit = this.limits['1']; // Use the longest limit (quality)
       
       // For each user
-      for (const [userId, requests] of this.userRequests.entries()) {
-        // Filter out requests older than the max limit
-        const recentRequests = requests.filter(timestamp => (now - timestamp) < maxLimit);
+      for (const [userId, requestsMap] of this.userRequests.entries()) {
+        let hasRecentRequests = false;
         
-        // If there are no recent requests, remove the user
-        if (recentRequests.length === 0) {
+        // Check each quality/speed setting
+        for (const qualitySpeed of Object.keys(requestsMap)) {
+          const requests = requestsMap[qualitySpeed];
+          
+          // Filter out requests older than the max limit
+          const recentRequests = requests.filter(timestamp => (now - timestamp) < maxLimit);
+          
+          if (recentRequests.length > 0) {
+            hasRecentRequests = true;
+          }
+          
+          // Update with only recent requests
+          requestsMap[qualitySpeed] = recentRequests;
+        }
+        
+        // If there are no recent requests for any setting, remove the user
+        if (!hasRecentRequests) {
           this.userRequests.delete(userId);
         } else {
           // Update with only recent requests
-          this.userRequests.set(userId, recentRequests);
+          this.userRequests.set(userId, requestsMap);
         }
       }
     }
