@@ -13,6 +13,26 @@ const connectDB = require('./db');
 // Connect to MongoDB
 connectDB();
 
+// Add this function at the top of server.js, before your routes
+function getClientIp(req) {
+  // Get IP from X-Forwarded-For header (most common proxy header)
+  const xForwardedFor = req.headers['x-forwarded-for'];
+  if (xForwardedFor) {
+    // Extract the first IP in case of multiple entries (client,proxy1,proxy2,...)
+    const ips = xForwardedFor.split(',');
+    return ips[0].trim();
+  }
+  
+  // Try other common headers
+  const xRealIp = req.headers['x-real-ip'];
+  if (xRealIp) {
+    return xRealIp;
+  }
+  
+  // Fallback to remote address from socket
+  return req.socket.remoteAddress;
+}
+
 // Import auth routes
 const auth = require('./auth');
 
@@ -57,7 +77,7 @@ const authenticate = async (req, res, next) => {
     // Attach user and client IP to request
     req.user = user;
     req.token = token;
-    req.clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    req.clientIp = getClientIp(req);
     
     next();
   } catch (error) {
@@ -74,7 +94,7 @@ app.get('/', (req, res) => {
   res.send('Novel Summarizer API is running');
 });
 
-// Main endpoint to receive chapter content and return summary with rate limiting
+// Update in server.js
 app.post('/summarize', authenticate, async (req, res) => {
   try {
     // Extract content and settings
@@ -89,17 +109,30 @@ app.post('/summarize', authenticate, async (req, res) => {
 
     // Get user ID for rate limiting
     const userId = req.user._id;
+    const clientIp = req.clientIp;
     
-    // Check rate limit
-    const canMakeRequest = await rateLimiter.canMakeRequest(userId, qualitySpeed);
-    if (!canMakeRequest) {
-      const timeRemaining = await rateLimiter.getTimeRemaining(userId, qualitySpeed);
+    // Check rate limit with enhanced IP check
+    const rateCheckResult = await rateLimiter.canMakeRequest(userId, qualitySpeed, clientIp);
+    
+    if (!rateCheckResult.canRequest) {
+      const timeRemaining = rateCheckResult.timeRemaining || 0;
       const formattedTime = rateLimiter.formatTimeRemaining(timeRemaining);
+      
+      let message = 'Rate limit exceeded. Please try again later.';
+      
+      if (rateCheckResult.reason === 'ip_daily_limit') {
+        message = 'Daily request limit reached from your IP address. Please try again tomorrow.';
+      } else if (rateCheckResult.reason === 'ip_rate_limit') {
+        message = `IP-based rate limit exceeded. Please try again in ${formattedTime}.`;
+      } else {
+        message = `Rate limit exceeded. Please try again in ${formattedTime}.`;
+      }
       
       return res.status(429).json({
         success: false,
-        message: `Rate limit exceeded. Please try again in ${formattedTime}.`,
-        timeRemaining
+        message: message,
+        timeRemaining,
+        reason: rateCheckResult.reason
       });
     }
     
@@ -120,7 +153,7 @@ app.post('/summarize', authenticate, async (req, res) => {
       chapterTitle || 'Untitled Chapter',
       novelTitle,
       chapterContent.length,
-      req.clientIp
+      clientIp
     );
 
     console.log(`Received request to summarize chapter: ${chapterTitle || 'Untitled'}`);
@@ -156,23 +189,24 @@ app.post('/summarize', authenticate, async (req, res) => {
 // Add an endpoint to check rate limit status
 app.get('/rate-limit-status', authenticate, async (req, res) => {
   const userId = req.user._id;
+  const clientIp = req.clientIp;
   
-  // Check all tiers
+  // Check all tiers with IP
   const status = {
     quality: {
-      timeRemaining: await rateLimiter.getTimeRemaining(userId, '1'),
-      formattedTime: rateLimiter.formatTimeRemaining(await rateLimiter.getTimeRemaining(userId, '1')),
-      canMakeRequest: await rateLimiter.canMakeRequest(userId, '1')
+      timeRemaining: await rateLimiter.getTimeRemaining(userId, '1', clientIp),
+      formattedTime: rateLimiter.formatTimeRemaining(await rateLimiter.getTimeRemaining(userId, '1', clientIp)),
+      canMakeRequest: (await rateLimiter.canMakeRequest(userId, '1', clientIp)).canRequest
     },
     balanced: {
-      timeRemaining: await rateLimiter.getTimeRemaining(userId, '2'),
-      formattedTime: rateLimiter.formatTimeRemaining(await rateLimiter.getTimeRemaining(userId, '2')),
-      canMakeRequest: await rateLimiter.canMakeRequest(userId, '2')
+      timeRemaining: await rateLimiter.getTimeRemaining(userId, '2', clientIp),
+      formattedTime: rateLimiter.formatTimeRemaining(await rateLimiter.getTimeRemaining(userId, '2', clientIp)),
+      canMakeRequest: (await rateLimiter.canMakeRequest(userId, '2', clientIp)).canRequest
     },
     speed: {
-      timeRemaining: await rateLimiter.getTimeRemaining(userId, '3'),
-      formattedTime: rateLimiter.formatTimeRemaining(await rateLimiter.getTimeRemaining(userId, '3')),
-      canMakeRequest: await rateLimiter.canMakeRequest(userId, '3')
+      timeRemaining: await rateLimiter.getTimeRemaining(userId, '3', clientIp),
+      formattedTime: rateLimiter.formatTimeRemaining(await rateLimiter.getTimeRemaining(userId, '3', clientIp)),
+      canMakeRequest: (await rateLimiter.canMakeRequest(userId, '3', clientIp)).canRequest
     }
   };
   
@@ -358,6 +392,32 @@ ${prompt}`
     res.write(`data: ${JSON.stringify({ type: 'error', message: 'Error in streaming: ' + error.message })}\n\n`);
   }
 }
+
+// Add this endpoint to server.js (with proper admin authentication)
+app.get('/admin/suspicious-ips', authenticate, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.tier !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+    
+    const suspiciousIps = await rateLimiter.getSuspiciousIps();
+    
+    res.json({
+      success: true,
+      suspiciousIps
+    });
+  } catch (error) {
+    console.error('Error fetching suspicious IPs:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch suspicious IP data'
+    });
+  }
+});
 
 // Start server
 app.listen(port, () => {

@@ -1,3 +1,4 @@
+// models/User.js
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
@@ -8,23 +9,64 @@ const userSchema = new mongoose.Schema({
   },
   displayName: String,
   profilePicture: String,
+  tier: {
+    type: String,
+    default: 'free'
+  },
   lastLogin: {
     type: Date,
     default: Date.now
   },
-  tier: {
-    type: String,
-    enum: ['free', 'paid'],
-    default: 'free'
-  },
   ipAddresses: [{
     ip: String,
+    firstSeen: {
+      type: Date,
+      default: Date.now
+    },
     lastUsed: {
       type: Date,
       default: Date.now
+    },
+    // Track request count per IP
+    requestCount: {
+      type: Number,
+      default: 1
     }
   }]
-}, { timestamps: true });
+});
+
+// Add index for efficient query by email
+userSchema.index({ email: 1 });
+
+// Add method to update IP address
+userSchema.methods.updateIpAddress = function(ipAddress) {
+  if (!ipAddress) return;
+  
+  // Check if IP exists
+  const existingIp = this.ipAddresses.find(entry => entry.ip === ipAddress);
+  
+  if (existingIp) {
+    // Update existing IP
+    existingIp.lastUsed = new Date();
+    existingIp.requestCount += 1;
+  } else {
+    // Add new IP
+    this.ipAddresses.push({
+      ip: ipAddress,
+      firstSeen: new Date(),
+      lastUsed: new Date(),
+      requestCount: 1
+    });
+  }
+  
+  // Keep only last 10 IPs to avoid unbounded growth
+  if (this.ipAddresses.length > 10) {
+    // Sort by lastUsed (newest first)
+    this.ipAddresses.sort((a, b) => b.lastUsed - a.lastUsed);
+    // Keep only the 10 most recently used
+    this.ipAddresses = this.ipAddresses.slice(0, 10);
+  }
+};
 
 const User = mongoose.model('User', userSchema);
 module.exports = User;

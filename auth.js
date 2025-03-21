@@ -11,11 +11,30 @@ const Token = require('./models/Token');
 // Token expiration settings
 const TOKEN_EXPIRATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
 
+function getClientIp(req) {
+  // Get IP from X-Forwarded-For header (most common proxy header)
+  const xForwardedFor = req.headers['x-forwarded-for'];
+  if (xForwardedFor) {
+    // Extract the first IP in case of multiple entries (client,proxy1,proxy2,...)
+    const ips = xForwardedFor.split(',');
+    return ips[0].trim();
+  }
+  
+  // Try other common headers
+  const xRealIp = req.headers['x-real-ip'];
+  if (xRealIp) {
+    return xRealIp;
+  }
+  
+  // Fallback to remote address from socket
+  return req.socket.remoteAddress;
+}
+
 // Google authentication endpoint
 router.post('/google', async (req, res) => {
   try {
     const { token, email, name, picture } = req.body;
-    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const clientIp = getClientIp(req);
 
     if (!token || !email) {
       return res.status(400).json({ 
@@ -53,36 +72,32 @@ router.post('/google', async (req, res) => {
     }
 
     // Find or create user in database
-    let user = await User.findOne({ email });
-    
-    if (!user) {
-      // Create new user
-      user = new User({
-        email,
-        displayName: name,
-        profilePicture: picture,
-        ipAddresses: [{ ip: clientIp }]
-      });
-    } else {
-      // Update existing user
-      user.lastLogin = new Date();
-      user.displayName = name;
-      user.profilePicture = picture;
-      
-      // Add IP if not already tracked
-      const ipExists = user.ipAddresses.some(entry => entry.ip === clientIp);
-      if (!ipExists && clientIp) {
-        user.ipAddresses.push({ ip: clientIp });
-      } else if (clientIp) {
-        // Update timestamp for existing IP
-        const ipEntry = user.ipAddresses.find(entry => entry.ip === clientIp);
-        if (ipEntry) {
-          ipEntry.lastUsed = new Date();
-        }
-      }
-    }
-    
-    await user.save();
+let user = await User.findOne({ email });
+
+if (!user) {
+  // Create new user
+  user = new User({
+    email,
+    displayName: name,
+    profilePicture: picture,
+    ipAddresses: clientIp ? [{ 
+      ip: clientIp,
+      firstSeen: new Date(),
+      lastUsed: new Date(),
+      requestCount: 1
+    }] : []
+  });
+} else {
+  // Update existing user
+  user.lastLogin = new Date();
+  user.displayName = name;
+  user.profilePicture = picture;
+  
+  // Update IP address using the method we added
+  user.updateIpAddress(clientIp);
+}
+
+await user.save();
 
     // Generate a session token
     const sessionToken = crypto.randomBytes(64).toString('hex');
