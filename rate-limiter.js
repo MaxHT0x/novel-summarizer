@@ -5,10 +5,16 @@ const User = require('./models/User');
 class RateLimiter {
     constructor() {
       // Use the same rate limits for both user and IP
+      // this.limits = {
+      //   '1': 30 * 60 * 1000,  // Quality: 30 minutes
+      //   '2': 60 * 1000,       // Balanced: 1 minute
+      //   '3': 20 * 1000        // Speed: 20 seconds
+      // };
+
       this.limits = {
-        '1': 30 * 60 * 1000,  // Quality: 30 minutes
-        '2': 60 * 1000,       // Balanced: 1 minute
-        '3': 20 * 1000        // Speed: 20 seconds
+        '1': 5 * 1000,  // Quality: 30 minutes
+        '2': 5 * 1000,       // Balanced: 1 minute
+        '3': 5 * 1000        // Speed: 20 seconds
       };
       
       // Maximum requests per day per IP (across all users)

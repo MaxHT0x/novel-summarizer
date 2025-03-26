@@ -261,8 +261,8 @@ async function streamSummaryFromOpenRouter(prompt, res, qualitySpeed = '2') {
         break;
       case '2': // Balanced (default)
       default:
-        model = "anthropic/claude-3.7-sonnet";
-        modelName = "Claude 3.7 Sonnet (Balanced)";
+        model = "google/gemini-2.5-pro-exp-03-25:free";
+        modelName = "Gemini 2.5 Pro (Balanced)";
         break;
     }
     
